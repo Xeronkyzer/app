@@ -40,12 +40,17 @@ export class WebRTCManager {
         this.onFileReceived = onFileReceived;
         this.onRoomCreated = onRoomCreated;
 
-        // Create peer connection with STUN servers for NAT traversal
+        // Create peer connection with ICE servers for NAT traversal
+        // For localhost testing (same machine), STUN is sufficient
         this.peerConnection = new RTCPeerConnection({
             iceServers: [
                 { urls: 'stun:stun.l.google.com:19302' },
                 { urls: 'stun:stun1.l.google.com:19302' }
-            ]
+            ],
+            // Allow all candidate types including host candidates (needed for localhost)
+            iceTransportPolicy: 'all',
+            bundlePolicy: 'max-bundle',
+            rtcpMuxPolicy: 'require'
         });
 
         // Connection state monitoring
@@ -59,7 +64,15 @@ export class WebRTCManager {
         };
 
         this.peerConnection.oniceconnectionstatechange = () => {
-            console.log('[WebRTC] ICE state:', this.peerConnection.iceConnectionState);
+            console.log('[WebRTC] ICE connection state:', this.peerConnection.iceConnectionState);
+            // If ICE fails, notify the user
+            if (this.peerConnection.iceConnectionState === 'failed') {
+                console.error('[WebRTC] ICE connection failed - may need TURN server');
+            }
+        };
+
+        this.peerConnection.onicegatheringstatechange = () => {
+            console.log('[WebRTC] ICE gathering state:', this.peerConnection.iceGatheringState);
         };
 
         // Handle incoming data channel (for non-host)
@@ -71,13 +84,16 @@ export class WebRTCManager {
         // Handle ICE candidates
         this.peerConnection.onicecandidate = (event) => {
             if (event.candidate) {
-                console.log('[WebRTC] New ICE candidate');
+                const candidateType = event.candidate.type || 'unknown';
+                console.log('[WebRTC] New ICE candidate:', candidateType, event.candidate.candidate?.substring(0, 50) + '...');
                 if (this.socket && this.roomCode) {
                     this.socket.emit('signal', {
                         roomCode: this.roomCode,
                         data: { type: 'ice-candidate', candidate: event.candidate.toJSON() }
                     });
                 }
+            } else {
+                console.log('[WebRTC] ICE candidate gathering complete');
             }
         };
     }
@@ -87,19 +103,41 @@ export class WebRTCManager {
     // ============================================
 
     connectSocket(): Promise<void> {
-        return new Promise((resolve) => {
+        return new Promise((resolve, reject) => {
             if (this.socket?.connected) {
+                console.log('[Socket] Already connected');
                 resolve();
                 return;
             }
 
+            console.log('[Socket] Connecting to signaling server:', SIGNALING_SERVER);
+
             this.socket = io(SIGNALING_SERVER, {
-                transports: ['websocket', 'polling']
+                transports: ['websocket', 'polling'],
+                timeout: 10000,
+                reconnection: true,
+                reconnectionAttempts: 3
             });
 
+            // Connection timeout
+            const timeout = setTimeout(() => {
+                console.error('[Socket] Connection timeout');
+                this.onStatusChange('error');
+                reject(new Error('Socket connection timeout'));
+            }, 15000);
+
             this.socket.on('connect', () => {
-                console.log('[Socket] Connected to signaling server');
+                clearTimeout(timeout);
+                console.log('[Socket] Connected to signaling server, socket id:', this.socket?.id);
                 resolve();
+            });
+
+            this.socket.on('disconnect', (reason) => {
+                console.log('[Socket] Disconnected:', reason);
+                if (reason === 'io server disconnect') {
+                    // Server disconnected, try reconnect
+                    this.socket?.connect();
+                }
             });
 
             this.socket.on('signal', async (data: SignalData) => {
@@ -190,6 +228,12 @@ export class WebRTCManager {
     // ============================================
 
     async createRoom(): Promise<string> {
+        // If room already created, return existing code
+        if (this.roomCode) {
+            console.log('[Room] Already created, returning existing:', this.roomCode);
+            return this.roomCode;
+        }
+
         await this.connectSocket();
         this.isHost = true;
 
@@ -205,18 +249,29 @@ export class WebRTCManager {
     }
 
     async joinRoom(code: string): Promise<boolean> {
+        console.log('[Room] Attempting to join room:', code);
         await this.connectSocket();
         this.isHost = false;
         this.roomCode = code;
 
         return new Promise((resolve) => {
+            // Timeout for join response
+            const timeout = setTimeout(() => {
+                console.error('[Room] Join timeout - no response from server');
+                this.onStatusChange('error');
+                resolve(false);
+            }, 10000);
+
+            console.log('[Room] Emitting join-room event for code:', code);
             this.socket!.emit('join-room', code, (response: { error?: string; success?: boolean }) => {
+                clearTimeout(timeout);
+                console.log('[Room] join-room response:', response);
                 if (response.error) {
                     console.error('[Room] Join error:', response.error);
                     this.onStatusChange('error');
                     resolve(false);
                 } else {
-                    console.log('[Room] Joined:', code);
+                    console.log('[Room] Successfully joined:', code);
                     this.onStatusChange('connecting');
                     resolve(true);
                 }

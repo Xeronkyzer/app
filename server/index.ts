@@ -40,12 +40,17 @@ io.on('connection', (socket) => {
 
     // Guest joins a room
     socket.on('join-room', (roomCode: string, callback) => {
+        console.log(`[Room] Join request from ${socket.id} for room: ${roomCode}`);
+        console.log(`[Room] Current rooms:`, Array.from(rooms.keys()));
+
         const room = rooms.get(roomCode);
         if (!room) {
+            console.log(`[Room] Room ${roomCode} not found`);
             callback({ error: 'Room not found' });
             return;
         }
         if (room.guest) {
+            console.log(`[Room] Room ${roomCode} is full`);
             callback({ error: 'Room is full' });
             return;
         }
@@ -60,13 +65,20 @@ io.on('connection', (socket) => {
 
     // Relay signaling messages (offer, answer, ice-candidate)
     socket.on('signal', ({ roomCode, data }) => {
+        console.log(`[Signal] ${data.type} from ${socket.id} in room ${roomCode}`);
         const room = rooms.get(roomCode);
-        if (!room) return;
+        if (!room) {
+            console.log(`[Signal] Room ${roomCode} not found`);
+            return;
+        }
 
         // Relay to the other peer
         const target = socket.id === room.host ? room.guest : room.host;
         if (target) {
+            console.log(`[Signal] Relaying ${data.type} to ${target}`);
             io.to(target).emit('signal', data);
+        } else {
+            console.log(`[Signal] No target peer found in room ${roomCode}`);
         }
     });
 

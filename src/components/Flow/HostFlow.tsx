@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import QRCode from 'react-qr-code';
 import { WebRTCManager } from '../../utils/webrtc';
 import QRScanner from '../QRScanner';
@@ -13,16 +13,29 @@ export const HostFlow = ({ mode, onConnected }: HostFlowProps) => {
     const [step, setStep] = useState<'creating' | 'waiting' | 'scan-answer'>('creating');
     const [offerData, setOfferData] = useState('');
     const [roomCode, setRoomCode] = useState('');
-    const [manager] = useState(() => new WebRTCManager(
-        (status) => {
-            if (status === 'connected') onConnected(manager);
-        },
-        (_p, _s) => { },
-        (_f, _n) => { },
-        (code) => setRoomCode(code)
-    ));
+    const managerRef = useRef<WebRTCManager | null>(null);
+    const initializedRef = useRef(false);
+
+    const [manager] = useState(() => {
+        const mgr = new WebRTCManager(
+            (status) => {
+                if (status === 'connected' && managerRef.current) {
+                    onConnected(managerRef.current);
+                }
+            },
+            (_p, _s) => { },
+            (_f, _n) => { },
+            (code) => setRoomCode(code)
+        );
+        managerRef.current = mgr;
+        return mgr;
+    });
 
     useEffect(() => {
+        // Prevent double-execution in React Strict Mode
+        if (initializedRef.current) return;
+        initializedRef.current = true;
+
         const init = async () => {
             if (mode === 'code') {
                 await manager.createRoom();
@@ -35,10 +48,9 @@ export const HostFlow = ({ mode, onConnected }: HostFlowProps) => {
         };
         init();
 
-        return () => {
-            // Cleanup on unmount
-        };
-    }, [mode]);
+        // No cleanup here - manager persists until component fully unmounts
+    }, [mode, manager]);
+
 
     const handleScanAnswer = async (data: string) => {
         try {

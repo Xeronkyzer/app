@@ -15,22 +15,27 @@ export const JoinFlow = ({ mode, onConnected }: JoinFlowProps) => {
     const [codeInput, setCodeInput] = useState<string[]>(['', '', '', '', '', '']);
     const [error, setError] = useState('');
     const inputRefs = useRef<(HTMLInputElement | null)[]>([]);
+    const managerRef = useRef<WebRTCManager | null>(null);
 
-    const [manager] = useState(() => new WebRTCManager(
-        (status) => {
-            console.log('[JoinFlow] Status:', status);
-            if (status === 'connected') {
-                onConnected(manager);
-            }
-            if (status === 'error' || status === 'failed') {
-                setError('Connection failed. Please try again.');
-                setStep('input');
-            }
-        },
-        () => { },
-        () => { },
-        () => { }
-    ));
+    const [manager] = useState(() => {
+        const mgr = new WebRTCManager(
+            (status) => {
+                console.log('[JoinFlow] Status:', status);
+                if (status === 'connected' && managerRef.current) {
+                    onConnected(managerRef.current);
+                }
+                if (status === 'error' || status === 'failed') {
+                    setError('Connection failed. Please try again.');
+                    setStep('input');
+                }
+            },
+            () => { },
+            () => { },
+            () => { }
+        );
+        managerRef.current = mgr;
+        return mgr;
+    });
 
     const setInputRef = useCallback((index: number) => (el: HTMLInputElement | null) => {
         inputRefs.current[index] = el;
@@ -71,8 +76,17 @@ export const JoinFlow = ({ mode, onConnected }: JoinFlowProps) => {
         }
     };
 
+    const joiningRef = useRef(false);
+
     const handleJoinRoom = async (code: string) => {
         if (code.length !== 6) return;
+
+        // Prevent duplicate join attempts
+        if (joiningRef.current) {
+            console.log('[JoinFlow] Already joining, ignoring duplicate call');
+            return;
+        }
+        joiningRef.current = true;
 
         setStep('connecting');
         setError('');
@@ -81,6 +95,7 @@ export const JoinFlow = ({ mode, onConnected }: JoinFlowProps) => {
         const success = await manager.joinRoom(code);
 
         if (!success) {
+            joiningRef.current = false; // Reset on failure so user can retry
             setError('Room not found. Check the code and try again.');
             setStep('input');
             setCodeInput(['', '', '', '', '', '']);
